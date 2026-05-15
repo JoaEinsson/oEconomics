@@ -10,7 +10,7 @@ struct Vec2 {
     float x, y; 
 };
 
-constexpr int N_TRAITS = 8;
+constexpr int N_TRAITS = 12;
 constexpr int M_MAT    = 8;
 constexpr int INV_CAP  = 8;
 
@@ -29,6 +29,10 @@ constexpr int GENE_METABOLISM = 2;
 constexpr int MEME_TRADE_TH = 3;
 constexpr int MEME_FARM = 4;
 constexpr int MEME_AGGRO = 5;
+constexpr int GENE_PANIC_TH = 6;
+constexpr int GENE_MIN_REPRO_AGE = 7;
+constexpr int GENE_ATTACK_TH = 8;
+constexpr int GENE_BARTER_DESIRE = 9;
 
 // L1-L10 AXIOMS: Estritamente PODs e Vetores (Zero OOP)
 

@@ -116,7 +116,12 @@ void system_cognition(Agents& A, Items& I) {
         std::array<float, M_MAT> d = calculate_deficit_vector(i, A, I);
         float sum_d = 0; for(float v : d) sum_d += v;
 
-        if (A.energy[i] < 30.0f && aggro_meme > 0.8f) { // Mais desesperado e raro
+        float panic_th = A.phenotype[i][GENE_PANIC_TH];
+        float attack_th = A.phenotype[i][GENE_ATTACK_TH];
+        float min_repro_age = A.phenotype[i][GENE_MIN_REPRO_AGE];
+        float barter_desire = A.phenotype[i][GENE_BARTER_DESIRE];
+
+        if (A.energy[i] < attack_th && aggro_meme > 0.8f) { // Mais desesperado e raro
             // Fome e Ódio: Procura vítima
             A.intent[i].type = Agents::Attack;
             A.intent[i].target_agent = 0;
@@ -130,11 +135,11 @@ void system_cognition(Agents& A, Items& I) {
             if(A.intent[i].target_agent == 0) A.intent[i].type = Agents::Idle;
         } else if (A.energy[i] > 30.0f && farm_meme > 0.6f && heavy_tools > 0) {
             A.intent[i].type = Agents::Farm;
-        } else if (A.energy[i] > repro_th) {
+        } else if (A.energy[i] > repro_th && A.age[i] > min_repro_age) {
             A.intent[i].type = Agents::Reproduce;
         } else if (raw_materials >= 2 && A.energy[i] > 20.0f) { // Alterado para 20.0f (CRAFT para desocupar espaço)
             A.intent[i].type = Agents::CraftItem; 
-        } else if (item_to_discard != 0 && A.energy[i] < 40.0f) {
+        } else if (item_to_discard != 0 && A.energy[i] < panic_th) {
             bool has_food = false;
             int empty_slots = 0;
             for(int j=0; j<INV_CAP; j++) {
@@ -152,7 +157,7 @@ void system_cognition(Agents& A, Items& I) {
                 }
             }
             A.intent[i].type = Agents::Idle; // Livre para usar o Faro
-        } else if(item_to_discard != 0 && sum_d > 10.0f) {
+        } else if(item_to_discard != 0 && sum_d > barter_desire) {
             A.intent[i].type = Agents::PlaceBarterOrder;
             A.intent[i].offered_item = item_to_discard;
             A.intent[i].demanded_profile = d; 
@@ -302,7 +307,7 @@ void system_nature(Agents& A, Items& I) {
 
         // Probabilidades de Spawn
         float spawn_chance = 0.0f;
-        if (is_forest) spawn_chance = 0.05f; 
+        if (is_forest) spawn_chance = 0.20f; 
         else if (is_vein) spawn_chance = 0.02f; 
         else if (is_farm) spawn_chance = 0.8f; 
         else if (is_ruin) spawn_chance = 0.01f; // Ruínas dão info muito raro
@@ -493,7 +498,7 @@ void system_reproduction(Agents& A) {
     for (size_t i = 1; i < initial_size; i++) {
         if (A.energy[i] <= 0) continue;
 
-        if (A.intent[i].type == Agents::Reproduce && A.energy[i] > 80.0f) {
+        if (A.intent[i].type == Agents::Reproduce && A.energy[i] > A.phenotype[i][GENE_REPRO_TH]) {
             // Mitose Perfeita Termodinâmica (Energia se divide L1)
             A.energy[i] /= 2.0f;
             A.intent[i].type = Agents::Idle;
@@ -534,6 +539,12 @@ void system_reproduction(Agents& A) {
             A.phenotype[child_idx][GENE_LIFESPAN] = std::clamp(A.phenotype[i][GENE_LIFESPAN] + mut_life, 100.0f, 2000.0f);
             A.phenotype[child_idx][GENE_REPRO_TH] = std::clamp(A.phenotype[i][GENE_REPRO_TH] + mut_repro, 40.0f, 150.0f);
             A.phenotype[child_idx][GENE_METABOLISM] = std::clamp(A.phenotype[i][GENE_METABOLISM] + mut_meta, 0.5f, 5.0f);
+
+            A.phenotype[child_idx][GENE_PANIC_TH] = std::clamp(A.phenotype[i][GENE_PANIC_TH] + std::normal_distribution<float>(0.0f, 5.0f)(global_rng), 5.0f, 90.0f);
+            A.phenotype[child_idx][GENE_MIN_REPRO_AGE] = std::clamp(A.phenotype[i][GENE_MIN_REPRO_AGE] + std::normal_distribution<float>(0.0f, 2.0f)(global_rng), 0.0f, 100.0f);
+            A.phenotype[child_idx][GENE_ATTACK_TH] = std::clamp(A.phenotype[i][GENE_ATTACK_TH] + std::normal_distribution<float>(0.0f, 5.0f)(global_rng), 5.0f, 90.0f);
+            A.phenotype[child_idx][GENE_BARTER_DESIRE] = std::clamp(A.phenotype[i][GENE_BARTER_DESIRE] + std::normal_distribution<float>(0.0f, 2.0f)(global_rng), 1.0f, 50.0f);
+
 
             A.lifespan[child_idx] = (int)A.phenotype[child_idx][GENE_LIFESPAN];
             A.basal_cost[child_idx] = A.phenotype[child_idx][GENE_METABOLISM];

@@ -85,6 +85,10 @@ void init_world(const SimulationConfig& config) {
         world_agents.phenotype[i][MEME_TRADE_TH] = THRESHOLD;
         world_agents.phenotype[i][MEME_FARM] = chance(rng); 
         world_agents.phenotype[i][MEME_AGGRO] = chance(rng); 
+        world_agents.phenotype[i][GENE_PANIC_TH] = 20.0f + chance(rng) * 30.0f; 
+        world_agents.phenotype[i][GENE_MIN_REPRO_AGE] = 10.0f + chance(rng) * 20.0f; 
+        world_agents.phenotype[i][GENE_ATTACK_TH] = 15.0f + chance(rng) * 25.0f; 
+        world_agents.phenotype[i][GENE_BARTER_DESIRE] = 5.0f + chance(rng) * 15.0f; 
         
         world_agents.basal_cost[i] = world_agents.phenotype[i][GENE_METABOLISM];
         
