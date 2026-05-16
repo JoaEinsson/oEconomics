@@ -37,9 +37,25 @@ constexpr int GENE_INTELLIGENCE = 10;
 constexpr int GENE_INNOVATION = 11;
 constexpr int GENE_ARTISTRY = 12;
 
+// Tipos de Conhecimento Espacial
+enum EpistemicType {
+    MEM_NONE = 0,
+    MEM_AGENT = 1,
+    MEM_MARKET = 2,
+    MEM_RESOURCE = 3
+};
+
+struct EpistemicNode {
+    EntityID id;
+    uint8_t type;
+    Vec2 pos;
+    uint32_t ts; // Timestamp de quando a informação foi gerada
+};
+
 // L1-L10 AXIOMS: Estritamente PODs e Vetores (Zero OOP)
 
 struct Agents {
+    std::vector<std::array<EpistemicNode, 10>> spatial_memory; // L2: Fog of War
     std::vector<float> energy;
     std::vector<float> basal_cost;
     std::vector<Vec2>  pos;

@@ -11,6 +11,7 @@ void destroy_item(EntityID item, Agents& A, Items& I);
 
 std::array<float, M_MAT> calculate_deficit_vector(size_t agent_idx, const Agents& A, const Items& I);
 
+void build_spatial_grid(const Agents& A, const Items& I);
 void system_nature(Agents& A, Items& I);
 void system_reproduction(Agents& A);
 void system_memetics(Agents& A, const TrustGraph& G);

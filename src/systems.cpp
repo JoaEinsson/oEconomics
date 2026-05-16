@@ -2,18 +2,62 @@
 #include <cmath>
 #include <algorithm>
 #include <random>
+#include <execution>
+#include <numeric>
 #include "simulation.hpp"
 
 static std::mt19937 global_rng;
+static std::vector<int> spatial_head;
+static std::vector<int> spatial_next;
+static std::vector<int> spatial_item_head;
+static std::vector<int> spatial_item_next;
+static std::vector<EntityID> agent_home;
 
 void seed_systems(int seed) {
     global_rng.seed(seed);
 }
 
+void build_spatial_grid(const Agents& A, const Items& I) {
+    spatial_head.assign(GRID_WIDTH * GRID_HEIGHT, -1);
+    if(spatial_next.size() < A.energy.size()) spatial_next.resize(A.energy.size(), -1);
+    
+    for (size_t i = 1; i < A.energy.size(); i++) {
+        if (A.energy[i] > 0) {
+            int x = std::clamp((int)A.pos[i].x, 0, GRID_WIDTH - 1);
+            int y = std::clamp((int)A.pos[i].y, 0, GRID_HEIGHT - 1);
+            int cell_idx = y * GRID_WIDTH + x;
+            spatial_next[i] = spatial_head[cell_idx];
+            spatial_head[cell_idx] = i;
+        }
+    }
+    
+    spatial_item_head.assign(GRID_WIDTH * GRID_HEIGHT, -1);
+    if(spatial_item_next.size() < I.mass.size()) spatial_item_next.resize(I.mass.size(), -1);
+    if(agent_home.size() < A.energy.size()) agent_home.resize(A.energy.size(), 0);
+    std::fill(agent_home.begin(), agent_home.end(), 0);
+    
+    for (size_t k = 1; k < I.mass.size(); k++) {
+        if (I.mass[k] > 0) {
+            int x = std::clamp((int)I.pos[k].x, 0, GRID_WIDTH - 1);
+            int y = std::clamp((int)I.pos[k].y, 0, GRID_HEIGHT - 1);
+            int cell_idx = y * GRID_WIDTH + x;
+            spatial_item_next[k] = spatial_item_head[cell_idx];
+            spatial_item_head[cell_idx] = k;
+            
+            // Indexação O(1) de propriedades (Casas) para Faro
+            if (I.anchored[k] && I.owner_id[k] != 0 && I.matter[k][MATTER_INDEX_HARDNESS] >= 100.0f) {
+                if(I.owner_id[k] < agent_home.size()) agent_home[I.owner_id[k]] = k;
+            }
+        }
+    }
+}
+
 std::array<float, M_MAT> calculate_deficit_vector(size_t agent_idx, const Agents& A, const Items& I) {
     std::array<float, M_MAT> d = {0};
-    float energy_deficit = 100.0f - A.energy[agent_idx];
-    if(energy_deficit > 20.0f) { 
+    // L4: Valor Subjetivo Dinâmico - O déficit calórico emerge do desejo genético de reprodução
+    float ideal_energy = A.phenotype[agent_idx][GENE_REPRO_TH] + 10.0f; // Margem de segurança
+    float energy_deficit = ideal_energy - A.energy[agent_idx];
+    if(energy_deficit > 0.0f) { 
         d[MATTER_INDEX_CALORIES] = energy_deficit;
     }
     
@@ -76,17 +120,13 @@ void swap_items_in_inventory(Agents& A, EntityID agent1, EntityID item1, EntityI
     }
 }
 
-void destroy_item(EntityID item, Agents& A, Items& I) {
+void destroy_item(EntityID item, Items& I) {
     if(item < I.mass.size()) {
         I.mass[item] = 0;
         I.integrity[item] = 0;
         I.owner_id[item] = 0;
+        I.anchored[item] = false;
         for(int i = 0; i < M_MAT; i++) I.matter[item][i] = 0;
-    }
-    for(size_t a = 1; a < A.inventory.size(); a++) {
-        for(int j = 0; j < INV_CAP; j++) {
-            if(A.inventory[a][j] == item) A.inventory[a][j] = 0;
-        }
     }
 }
 
@@ -133,10 +173,23 @@ void system_cognition(Agents& A, Items& I) {
             A.intent[i].type = Agents::Attack;
             A.intent[i].target_agent = 0;
             float min_dist = 9999.0f;
-            for(size_t tgt = 1; tgt < A.energy.size(); tgt++) {
-                if(tgt != i && A.energy[tgt] > 10.0f) {
-                    float dist = std::abs(A.pos[i].x - A.pos[tgt].x) + std::abs(A.pos[i].y - A.pos[tgt].y);
-                    if(dist < min_dist) { min_dist = dist; A.intent[i].target_agent = tgt; }
+            
+            int ax = std::clamp((int)A.pos[i].x, 0, GRID_WIDTH - 1);
+            int ay = std::clamp((int)A.pos[i].y, 0, GRID_HEIGHT - 1);
+            int search_radius = 5;
+            
+            for(int dy = -search_radius; dy <= search_radius; dy++) {
+                for(int dx = -search_radius; dx <= search_radius; dx++) {
+                    int nx = ax + dx, ny = ay + dy;
+                    if(nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+                        int cell_idx = ny * GRID_WIDTH + nx;
+                        for(int tgt = spatial_head[cell_idx]; tgt != -1; tgt = spatial_next[tgt]) {
+                            if(tgt != i && A.energy[tgt] > 10.0f) {
+                                float dist = std::abs(A.pos[i].x - A.pos[tgt].x) + std::abs(A.pos[i].y - A.pos[tgt].y);
+                                if(dist < min_dist) { min_dist = dist; A.intent[i].target_agent = tgt; }
+                            }
+                        }
+                    }
                 }
             }
             if(A.intent[i].target_agent == 0) A.intent[i].type = Agents::Idle;
@@ -243,29 +296,47 @@ void system_metabolism_and_consumption(Agents& A, Items& I) {
             continue;
         }
 
-        // Checar se está abrigado (em cima de uma estrutura ancorada com Hardness >= 100 de sua propriedade ou terra sem dono)
+        // Checar se está abrigado (em cima de uma estrutura ancorada com Hardness >= 100)
         float current_basal = A.basal_cost[i];
-        for (size_t k = 1; k < I.mass.size(); k++) {
-            if (I.mass[k] > 0 && I.anchored[k] && I.matter[k][MATTER_INDEX_HARDNESS] >= 100.0f) {
-                if (I.owner_id[k] == i || I.owner_id[k] == 0) {
-                    if (std::abs(I.pos[k].x - A.pos[i].x) <= 1.0f && std::abs(I.pos[k].y - A.pos[i].y) <= 1.0f) {
-                        current_basal = 0.2f; // Redução drástica por isolamento/abrigo
-                        break;
+        
+        int ax = std::clamp((int)A.pos[i].x, 0, GRID_WIDTH - 1);
+        int ay = std::clamp((int)A.pos[i].y, 0, GRID_HEIGHT - 1);
+        for(int dy = -1; dy <= 1; dy++) {
+            for(int dx = -1; dx <= 1; dx++) {
+                int nx = ax + dx, ny = ay + dy;
+                if(nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+                    int cell_idx = ny * GRID_WIDTH + nx;
+                    for(int k = spatial_item_head[cell_idx]; k != -1; k = spatial_item_next[k]) {
+                        if (I.anchored[k] && I.matter[k][MATTER_INDEX_HARDNESS] >= 100.0f) {
+                            if (I.owner_id[k] == i || I.owner_id[k] == 0) {
+                                if (std::abs(I.pos[k].x - A.pos[i].x) <= 1.0f && std::abs(I.pos[k].y - A.pos[i].y) <= 1.0f) {
+                                    current_basal = 0.2f; 
+                                    goto found_shelter;
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
+        found_shelter:
         
         A.energy[i] -= current_basal;
         if(A.energy[i] <= 0 && was_alive) global_deaths_starvation++;
-        if(A.energy[i] < 80.0f) { // Combate ao celibato: comer sempre que puder para conseguir energia de reprodução
+        std::array<float, M_MAT> d_metabolism = calculate_deficit_vector(i, A, I);
+        if(d_metabolism[MATTER_INDEX_CALORIES] > 5.0f) { // Dinâmico pelo fenótipo
+            float best_util = 0.0f;
+            EntityID best_food = 0;
             for(int j=0; j<INV_CAP; j++) {
                 EntityID item = A.inventory[i][j];
                 if(item != 0 && I.matter[item][MATTER_INDEX_CALORIES] > 0) {
-                    A.intent[i].type = Agents::ConsumeItem;
-                    A.intent[i].offered_item = item;
-                    break;
+                    float util = d_metabolism[MATTER_INDEX_CALORIES] * I.matter[item][MATTER_INDEX_CALORIES];
+                    if(util > best_util) { best_util = util; best_food = item; }
                 }
+            }
+            if(best_food != 0) {
+                A.intent[i].type = Agents::ConsumeItem;
+                A.intent[i].offered_item = best_food;
             }
         }
         if (A.intent[i].type == Agents::ConsumeItem) {
@@ -273,7 +344,8 @@ void system_metabolism_and_consumption(Agents& A, Items& I) {
             if (target != 0) {
                 float extractable_energy = I.matter[target][MATTER_INDEX_CALORIES];
                 A.energy[i] += extractable_energy * 0.8f; 
-                destroy_item(target, A, I); 
+                destroy_item(target, I); 
+                for(int j=0; j<INV_CAP; j++) if(A.inventory[i][j] == target) A.inventory[i][j] = 0;
             }
             A.intent[i].type = Agents::Idle; 
         }
@@ -421,39 +493,61 @@ void system_movement(Agents& A, Items& I, const Markets& M, const TrustGraph& G)
                 else if (A.pos[i].y > my) dy = -1.0f;
             }
         } else {
-            // Faro Local (L5: Gradiente descendente para comida)
-            bool found_food = false;
-            float min_dist = 9999.0f;
-            Vec2 best_food = {0,0};
+            // Faro Local Universal (L5 + L4: Gradiente descendente guiado por Produto Escalar)
+            bool found_target = false;
+            float best_utility = 0.0f;
+            Vec2 best_target = {0,0};
             
-            if (A.energy[i] < 40.0f) {
-                for(size_t k = 1; k < I.mass.size(); k++) {
-                    if(I.mass[k] > 0 && I.owner_id[k] == 0 && I.matter[k][MATTER_INDEX_CALORIES] > 0) {
-                        float dist = std::abs(I.pos[k].x - A.pos[i].x) + std::abs(I.pos[k].y - A.pos[i].y);
-                        if(dist <= expanded_radar && dist < min_dist) {
-                            min_dist = dist;
-                            best_food = I.pos[k];
-                            found_food = true;
+            std::array<float, M_MAT> d = calculate_deficit_vector(i, A, I);
+            float sum_d = 0; for(float v : d) sum_d += v;
+            
+            if (sum_d > 10.0f) { // Só fareja se tiver carência vetorial
+                int s_rad = std::ceil(expanded_radar);
+                int ax = std::clamp((int)A.pos[i].x, 0, GRID_WIDTH - 1);
+                int ay = std::clamp((int)A.pos[i].y, 0, GRID_HEIGHT - 1);
+                for(int dy = -s_rad; dy <= s_rad; dy++) {
+                    for(int dx = -s_rad; dx <= s_rad; dx++) {
+                        int nx = ax + dx, ny = ay + dy;
+                        if(nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+                            int cell_idx = ny * GRID_WIDTH + nx;
+                            for(int k = spatial_item_head[cell_idx]; k != -1; k = spatial_item_next[k]) {
+                                if (I.owner_id[k] == 0 && !I.anchored[k]) {
+                                    float utility = 0.0f;
+                                    for(int m = 0; m < M_MAT; m++) utility += d[m] * I.matter[k][m];
+                                    
+                                    if (utility > 50.0f) { // Percebe valor real na matéria
+                                        float dist = std::abs(I.pos[k].x - A.pos[i].x) + std::abs(I.pos[k].y - A.pos[i].y);
+                                        float score = utility / (dist + 1.0f); // Desconto hiperbólico pelo custo de transporte L5
+                                        if (dist <= expanded_radar && score > best_utility) {
+                                            best_utility = score;
+                                            best_target = I.pos[k];
+                                            found_target = true;
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
             
-            if(found_food) {
-                if (A.pos[i].x < best_food.x) dx = 1.0f;
-                else if (A.pos[i].x > best_food.x) dx = -1.0f;
-                if (A.pos[i].y < best_food.y) dy = 1.0f;
-                else if (A.pos[i].y > best_food.y) dy = -1.0f;
+            if(found_target) {
+                if (A.pos[i].x < best_target.x) dx = 1.0f;
+                else if (A.pos[i].x > best_target.x) dx = -1.0f;
+                if (A.pos[i].y < best_target.y) dy = 1.0f;
+                else if (A.pos[i].y > best_target.y) dy = -1.0f;
             } else {
                 // Faro Local: Voltar para Casa (Propriedade Privada)
                 bool going_home = false;
                 Vec2 home_pos = {0,0};
-                for (size_t k = 1; k < I.mass.size(); k++) {
-                    if (I.mass[k] > 0 && I.anchored[k] && I.owner_id[k] == i && I.matter[k][MATTER_INDEX_HARDNESS] >= 100.0f) {
-                        home_pos = I.pos[k];
-                        going_home = true;
-                        break;
-                    }
+                
+                EntityID home_id = 0;
+                if(i < agent_home.size()) {
+                    home_id = agent_home[i];
+                }
+                if(home_id != 0 && I.mass[home_id] > 0) {
+                    home_pos = I.pos[home_id];
+                    going_home = true;
                 }
                 
                 if(going_home) {
@@ -483,24 +577,34 @@ void system_movement(Agents& A, Items& I, const Markets& M, const TrustGraph& G)
             }
         }
 
-        // Foraging: Se passar por cima de comida no chão e tiver espaço, coleta. (Exceto Fazendas/Propriedade de outros)
-        for (size_t k = 1; k < I.mass.size(); k++) {
-            if (I.mass[k] > 0 && I.matter[k][MATTER_INDEX_HARDNESS] < 200.0f) {
-                // Se está ancorado, ou pertence a outro agente, não pode pegar!
-                if (I.anchored[k] && I.owner_id[k] != 0 && I.owner_id[k] != i) continue;
-                if (!I.anchored[k] && I.owner_id[k] != 0) continue; // Outra pessoa está segurando
-                
-                if (std::abs(I.pos[k].x - A.pos[i].x) <= 1.0f && std::abs(I.pos[k].y - A.pos[i].y) <= 1.0f) {
-                    for (int j = 0; j < INV_CAP; j++) {
-                        if (A.inventory[i][j] == 0) {
-                            A.inventory[i][j] = k;
-                            I.owner_id[k] = i; 
-                            break;
+        // Foraging: Se passar por cima de comida no chão e tiver espaço, coleta.
+        int ax = std::clamp((int)A.pos[i].x, 0, GRID_WIDTH - 1);
+        int ay = std::clamp((int)A.pos[i].y, 0, GRID_HEIGHT - 1);
+        for(int dy = -1; dy <= 1; dy++) {
+            for(int dx = -1; dx <= 1; dx++) {
+                int nx = ax + dx, ny = ay + dy;
+                if(nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+                    int cell_idx = ny * GRID_WIDTH + nx;
+                    for(int k = spatial_item_head[cell_idx]; k != -1; k = spatial_item_next[k]) {
+                        if (I.matter[k][MATTER_INDEX_HARDNESS] < 200.0f) {
+                            if (I.anchored[k] && I.owner_id[k] != 0 && I.owner_id[k] != i) continue;
+                            if (!I.anchored[k] && I.owner_id[k] != 0) continue; 
+                            
+                            if (std::abs(I.pos[k].x - A.pos[i].x) <= 1.0f && std::abs(I.pos[k].y - A.pos[i].y) <= 1.0f) {
+                                for (int j = 0; j < INV_CAP; j++) {
+                                    if (A.inventory[i][j] == 0) {
+                                        A.inventory[i][j] = k;
+                                        I.owner_id[k] = i; 
+                                        goto next_forage;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+        next_forage:;
     }
 }
 
@@ -603,57 +707,68 @@ void system_peer_to_peer_trade(Agents& A, Items& I, TrustGraph& G) {
     for(size_t i = 1; i < A.energy.size(); i++) {
         if(A.energy[i] <= 0 || A.intent[i].type != Agents::PlaceBarterOrder) continue;
         
-        for(size_t j = i + 1; j < A.energy.size(); j++) {
-            if(A.energy[j] <= 0 || A.intent[j].type != Agents::PlaceBarterOrder) continue;
-            
-            if(std::abs(A.pos[i].x - A.pos[j].x) <= 1.0f && std::abs(A.pos[i].y - A.pos[j].y) <= 1.0f) {
-                float match_1_wants_2 = vector_similarity(A.intent[i].demanded_profile, I.matter[A.intent[j].offered_item]);
-                float match_2_wants_1 = vector_similarity(A.intent[j].demanded_profile, I.matter[A.intent[i].offered_item]);
-                
-                // Busca se já existe trust
-                float existing_trust = 0.0f;
-                size_t edge_idx = -1;
-                for(size_t e = 0; e < G.active.size(); e++) {
-                    if(G.active[e] && ((G.source[e] == i && G.target[e] == j) || (G.source[e] == j && G.target[e] == i))) {
-                        existing_trust = G.trust[e];
-                        edge_idx = e;
-                        break;
+        int x = std::clamp((int)A.pos[i].x, 0, GRID_WIDTH - 1);
+        int y = std::clamp((int)A.pos[i].y, 0, GRID_HEIGHT - 1);
+        
+        bool swapped = false;
+        for(int dy = -1; dy <= 1 && !swapped; dy++) {
+            for(int dx = -1; dx <= 1 && !swapped; dx++) {
+                int nx = x + dx, ny = y + dy;
+                if(nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+                    int cell_idx = ny * GRID_WIDTH + nx;
+                    for(int j = spatial_head[cell_idx]; j != -1; j = spatial_next[j]) {
+                        if(j > i && A.intent[j].type == Agents::PlaceBarterOrder) { // j > i evita trocas espelhadas
+                            float match_1_wants_2 = vector_similarity(A.intent[i].demanded_profile, I.matter[A.intent[j].offered_item]);
+                            float match_2_wants_1 = vector_similarity(A.intent[j].demanded_profile, I.matter[A.intent[i].offered_item]);
+                            
+                            // Busca se já existe trust
+                            float existing_trust = 0.0f;
+                            size_t edge_idx = -1;
+                            for(size_t e = 0; e < G.active.size(); e++) {
+                                if(G.active[e] && ((G.source[e] == i && G.target[e] == j) || (G.source[e] == j && G.target[e] == i))) {
+                                    existing_trust = G.trust[e];
+                                    edge_idx = e;
+                                    break;
+                                }
+                            }
+                            
+                            // Calcula o bônus de Estética (Aesthetics deslumbra e facilita acordos)
+                            float tool_aesthetics_i = 0.0f;
+                            for(int k=0; k<INV_CAP; k++) {
+                                EntityID item = A.inventory[i][k];
+                                if(item != 0) tool_aesthetics_i += I.matter[item][MATTER_INDEX_AESTHETICS];
+                            }
+                            
+                            float tool_aesthetics_j = 0.0f;
+                            for(int k=0; k<INV_CAP; k++) {
+                                EntityID item = A.inventory[j][k];
+                                if(item != 0) tool_aesthetics_j += I.matter[item][MATTER_INDEX_AESTHETICS];
+                            }
+                            
+                            float max_aesthetics = std::max(tool_aesthetics_i, tool_aesthetics_j);
+                            
+                            // Relaxa o limite com base na Confiança e na Estética
+                            float relaxed_threshold = THRESHOLD - (existing_trust / 1000.0f) - (max_aesthetics * 0.005f);
+                            if(relaxed_threshold < 0.1f) relaxed_threshold = 0.1f;
+                            
+                            if(match_1_wants_2 > relaxed_threshold && match_2_wants_1 > relaxed_threshold) {
+                                swap_items_in_inventory(A, i, A.intent[i].offered_item, j, A.intent[j].offered_item);
+                                A.intent[i].type = Agents::Idle;
+                                A.intent[j].type = Agents::Idle;
+                                
+                                if(edge_idx != -1) {
+                                    G.trust[edge_idx] += 10.0f;
+                                } else {
+                                    G.source.push_back(i);
+                                    G.target.push_back(j);
+                                    G.trust.push_back(10.0f);
+                                    G.active.push_back(true);
+                                }
+                                swapped = true;
+                                break; 
+                            }
+                        }
                     }
-                }
-                
-                // Calcula o bônus de Estética (Aesthetics deslumbra e facilita acordos)
-                float tool_aesthetics_i = 0.0f;
-                for(int k=0; k<INV_CAP; k++) {
-                    EntityID item = A.inventory[i][k];
-                    if(item != 0) tool_aesthetics_i += I.matter[item][MATTER_INDEX_AESTHETICS];
-                }
-                
-                float tool_aesthetics_j = 0.0f;
-                for(int k=0; k<INV_CAP; k++) {
-                    EntityID item = A.inventory[j][k];
-                    if(item != 0) tool_aesthetics_j += I.matter[item][MATTER_INDEX_AESTHETICS];
-                }
-                
-                float max_aesthetics = std::max(tool_aesthetics_i, tool_aesthetics_j);
-                
-                // Relaxa o limite com base na Confiança e na Estética
-                float relaxed_threshold = THRESHOLD - (existing_trust / 1000.0f) - (max_aesthetics * 0.005f);
-                if(relaxed_threshold < 0.1f) relaxed_threshold = 0.1f;
-                
-                if(match_1_wants_2 > relaxed_threshold && match_2_wants_1 > relaxed_threshold) {
-                    swap_items_in_inventory(A, i, A.intent[i].offered_item, j, A.intent[j].offered_item);
-                    A.intent[i].type = Agents::Idle;
-                    A.intent[j].type = Agents::Idle;
-                    
-                    if(edge_idx != -1) {
-                        G.trust[edge_idx] += 10.0f;
-                    } else {
-                        G.source.push_back(i);
-                        G.target.push_back(j);
-                        G.trust.push_back(10.0f);
-                        G.active.push_back(true);
-                    }
-                    break; // i já trocou, vai pro próximo
                 }
             }
         }

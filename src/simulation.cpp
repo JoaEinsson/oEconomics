@@ -11,9 +11,9 @@ std::atomic<bool> simulation_running{true};
 std::atomic<int> target_tps{10};
 std::atomic<bool> simulation_paused{false};
 
-uint32_t global_deaths_starvation = 0;
-uint32_t global_deaths_old_age = 0;
-uint32_t global_deaths_combat = 0;
+std::atomic<uint32_t> global_deaths_starvation{0};
+std::atomic<uint32_t> global_deaths_old_age{0};
+std::atomic<uint32_t> global_deaths_combat{0};
 
 std::mutex ui_mutex;
 UIState shared_state;
@@ -37,6 +37,7 @@ void init_world(const SimulationConfig& config) {
     world_agents.inventory.clear();
     world_agents.intent.clear();
     world_agents.basal_cost.clear();
+    world_agents.spatial_memory.clear();
     
     world_items.owner_id.clear();
     world_items.pos.clear();
@@ -54,6 +55,10 @@ void init_world(const SimulationConfig& config) {
     world_agents.intent.resize(config.initial_pop);
     world_agents.basal_cost.resize(config.initial_pop, 1.0f);
     world_agents.knowledge.resize(config.initial_pop, 0.0f);
+    
+    std::array<EpistemicNode, 10> empty_mem;
+    for(int i=0; i<10; i++) empty_mem[i] = {0, MEM_NONE, {0,0}, 0};
+    world_agents.spatial_memory.resize(config.initial_pop, empty_mem);
 
     world_items.matter.resize(5000);
     world_items.integrity.resize(5000, 100.0f);
@@ -188,6 +193,7 @@ void init_world(const SimulationConfig& config) {
 }
 
 void tick_world() {
+    build_spatial_grid(world_agents, world_items);
     system_nature(world_agents, world_items);
     system_social_maintenance(world_agents, world_graph);
     system_memetics(world_agents, world_graph); // L7 Cultural
@@ -216,6 +222,9 @@ void tick_world() {
 
     current_tick++;
 }
+
+void extract_telemetry_to_state(UIState& state);
+void write_telemetry_to_csv(UIState& state);
 
 void extract_telemetry_to_state(UIState& state) {
     state.tick = current_tick;
@@ -297,6 +306,9 @@ void extract_telemetry_to_state(UIState& state) {
         state.spatial_health[idx] = 3;
     }
 
+}
+
+void write_telemetry_to_csv(UIState& state) {
     if (csv_file.is_open()) {
         float avg_lifespan = 0, avg_aggro = 0, avg_farm = 0;
         float avg_age = 0, avg_repro = 0, avg_metabolism = 0;
@@ -395,7 +407,7 @@ void extract_telemetry_to_state(UIState& state) {
                  << market_orders << "," << avg_trust << "," << max_trust << "," << gini << ","
                  << total_food << "," << total_tools << "," << total_gems << ","
                  << global_deaths_starvation << "," << global_deaths_old_age << "," << global_deaths_combat << "\n";
-        csv_file.flush();
+        // csv_file.flush(); // Removido flush constante para evitar gargalo de IO
     }
 }
 
@@ -410,6 +422,11 @@ void sim_thread(SimulationConfig config) {
             if (current_tick % 1 == 0) {
                 std::lock_guard<std::mutex> lock(ui_mutex);
                 extract_telemetry_to_state(shared_state);
+            }
+            if (current_tick % 10 == 0) {
+                // Escreve CSV fora do lock e a cada 10 ticks apenas
+                write_telemetry_to_csv(shared_state);
+                if (current_tick % 100 == 0 && csv_file.is_open()) csv_file.flush();
             }
         }
         

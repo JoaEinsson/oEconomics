@@ -1,5 +1,10 @@
 import csv
 import sys
+import os
+import io
+
+# Força o terminal a usar UTF-8 no Windows para suportar os Emojis
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 def analyze(filepath):
     try:
@@ -82,9 +87,13 @@ def analyze(filepath):
     # Last tick
     print(f"| {ticks[-1]} | {pops[-1]} | {gini[-1]:.2f} | {max_trust[-1]:.1f} | {orders[-1]} | {panic_th[-1]:.1f} | {deaths_starve[-1]} |")
 
+import os
+
 if __name__ == '__main__':
-    # Try looking in root or build/Debug depending on how it's executed
-    try:
-        analyze('telemetry.csv')
-    except:
-        analyze('build/Debug/telemetry.csv')
+    filepath = 'telemetry.csv'
+    if len(sys.argv) > 1:
+        filepath = sys.argv[1]
+    elif not os.path.exists(filepath) and os.path.exists('build/Debug/telemetry.csv'):
+        filepath = 'build/Debug/telemetry.csv'
+    
+    analyze(filepath)
