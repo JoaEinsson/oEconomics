@@ -10,7 +10,7 @@ struct Vec2 {
     float x, y; 
 };
 
-constexpr int N_TRAITS = 12;
+constexpr int N_TRAITS = 13;
 constexpr int M_MAT    = 8;
 constexpr int INV_CAP  = 8;
 
@@ -33,6 +33,9 @@ constexpr int GENE_PANIC_TH = 6;
 constexpr int GENE_MIN_REPRO_AGE = 7;
 constexpr int GENE_ATTACK_TH = 8;
 constexpr int GENE_BARTER_DESIRE = 9;
+constexpr int GENE_INTELLIGENCE = 10;
+constexpr int GENE_INNOVATION = 11;
+constexpr int GENE_ARTISTRY = 12;
 
 // L1-L10 AXIOMS: Estritamente PODs e Vetores (Zero OOP)
 
@@ -44,6 +47,8 @@ struct Agents {
     std::vector<std::array<EntityID, INV_CAP>> inventory; 
     std::vector<int> age;
     std::vector<int> lifespan;
+
+    std::vector<float> knowledge; // Conhecimento empírico acumulado [0, Infinito)
 
     enum IntentionType { Idle, MoveTo, PlaceBarterOrder, ConsumeItem, Reproduce, CraftItem, Farm, Attack };
     struct Intention {

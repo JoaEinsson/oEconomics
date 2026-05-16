@@ -11,6 +11,10 @@ std::atomic<bool> simulation_running{true};
 std::atomic<int> target_tps{10};
 std::atomic<bool> simulation_paused{false};
 
+uint32_t global_deaths_starvation = 0;
+uint32_t global_deaths_old_age = 0;
+uint32_t global_deaths_combat = 0;
+
 std::mutex ui_mutex;
 UIState shared_state;
 
@@ -49,6 +53,7 @@ void init_world(const SimulationConfig& config) {
     world_agents.inventory.resize(config.initial_pop);
     world_agents.intent.resize(config.initial_pop);
     world_agents.basal_cost.resize(config.initial_pop, 1.0f);
+    world_agents.knowledge.resize(config.initial_pop, 0.0f);
 
     world_items.matter.resize(5000);
     world_items.integrity.resize(5000, 100.0f);
@@ -64,9 +69,13 @@ void init_world(const SimulationConfig& config) {
     world_graph.trust.clear();
     world_graph.active.clear();
 
+    global_deaths_starvation = 0;
+    global_deaths_old_age = 0;
+    global_deaths_combat = 0;
+
     csv_file.open("telemetry.csv");
     if(csv_file.is_open()) {
-        csv_file << "Tick,Pop_Alive,Avg_Energy,Avg_Lifespan,Avg_Aggro,Avg_Farm,Active_Edges,Farms_Count,Avg_Age,Avg_Repro_Th,Avg_Metabolism,Avg_Integrity\n";
+        csv_file << "Tick,Pop_Alive,Avg_Energy,Avg_Lifespan,Avg_Aggro,Avg_Farm,Active_Edges,Farms_Count,Avg_Age,Avg_Repro_Th,Avg_Metabolism,Avg_Integrity,Avg_Panic_Th,Avg_Min_Repro,Avg_Attack_Th,Avg_Barter_Desire,Avg_Knowledge,Avg_Intelligence,Avg_Artistry,Market_Orders,Average_Trust,Max_Trust,Gini_Index,Total_Food,Total_Tools,Total_Gems,Deaths_Starvation,Deaths_OldAge,Deaths_Combat\n";
     }
 
     std::mt19937 rng(config.seed);
@@ -89,6 +98,9 @@ void init_world(const SimulationConfig& config) {
         world_agents.phenotype[i][GENE_MIN_REPRO_AGE] = 10.0f + chance(rng) * 20.0f; 
         world_agents.phenotype[i][GENE_ATTACK_TH] = 15.0f + chance(rng) * 25.0f; 
         world_agents.phenotype[i][GENE_BARTER_DESIRE] = 5.0f + chance(rng) * 15.0f; 
+        world_agents.phenotype[i][GENE_INTELLIGENCE] = chance(rng);
+        world_agents.phenotype[i][GENE_INNOVATION] = chance(rng);
+        world_agents.phenotype[i][GENE_ARTISTRY] = chance(rng);
         
         world_agents.basal_cost[i] = world_agents.phenotype[i][GENE_METABOLISM];
         
@@ -288,7 +300,12 @@ void extract_telemetry_to_state(UIState& state) {
     if (csv_file.is_open()) {
         float avg_lifespan = 0, avg_aggro = 0, avg_farm = 0;
         float avg_age = 0, avg_repro = 0, avg_metabolism = 0;
+        float avg_panic = 0, avg_min_repro = 0, avg_attack = 0, avg_barter = 0;
+        float avg_knowledge = 0, avg_intelligence = 0, avg_artistry = 0;
+
+        std::vector<float> energies_for_gini;
         int count = state.pop_alive > 0 ? state.pop_alive : 1;
+
         for(size_t i=1; i<world_agents.energy.size(); i++) {
             if(world_agents.energy[i] > 0) {
                 avg_lifespan += world_agents.phenotype[i][GENE_LIFESPAN];
@@ -297,14 +314,61 @@ void extract_telemetry_to_state(UIState& state) {
                 avg_age += world_agents.age[i];
                 avg_repro += world_agents.phenotype[i][GENE_REPRO_TH];
                 avg_metabolism += world_agents.phenotype[i][GENE_METABOLISM];
+                
+                avg_panic += world_agents.phenotype[i][GENE_PANIC_TH];
+                avg_min_repro += world_agents.phenotype[i][GENE_MIN_REPRO_AGE];
+                avg_attack += world_agents.phenotype[i][GENE_ATTACK_TH];
+                avg_barter += world_agents.phenotype[i][GENE_BARTER_DESIRE];
+                avg_knowledge += world_agents.knowledge[i];
+                avg_intelligence += world_agents.phenotype[i][GENE_INTELLIGENCE];
+                avg_artistry += world_agents.phenotype[i][GENE_ARTISTRY];
+                
+                energies_for_gini.push_back(world_agents.energy[i]);
             }
         }
+        
         avg_lifespan /= count; avg_aggro /= count; avg_farm /= count;
         avg_age /= count; avg_repro /= count; avg_metabolism /= count;
+        avg_panic /= count; avg_min_repro /= count; avg_attack /= count; avg_barter /= count;
+        avg_knowledge /= count; avg_intelligence /= count; avg_artistry /= count;
+        
+        float gini = 0.0f;
+        if(energies_for_gini.size() > 1) {
+            std::sort(energies_for_gini.begin(), energies_for_gini.end());
+            float sum_energy = 0;
+            for(float e : energies_for_gini) sum_energy += e;
+            float sum_diffs = 0;
+            for(size_t i = 0; i < energies_for_gini.size(); i++) {
+                sum_diffs += (i + 1) * energies_for_gini[i];
+            }
+            if(sum_energy > 0) {
+                gini = (2.0f * sum_diffs) / (energies_for_gini.size() * sum_energy) - (energies_for_gini.size() + 1.0f) / energies_for_gini.size();
+            }
+        }
+
+        float avg_trust = 0.0f;
+        float max_trust = 0.0f;
+        int active_edges = 0;
+        for(size_t e = 0; e < world_graph.active.size(); e++) {
+            if(world_graph.active[e]) {
+                active_edges++;
+                avg_trust += world_graph.trust[e];
+                if(world_graph.trust[e] > max_trust) max_trust = world_graph.trust[e];
+            }
+        }
+        if(active_edges > 0) avg_trust /= active_edges;
+
+        int market_orders = 0;
+        for(auto& pool : world_markets.active_orders) market_orders += pool.size();
+
+        float total_food = 0;
+        float total_tools = 0;
+        float total_gems = 0;
         
         int farms_count = 0;
         float avg_integrity = 0;
         int integrity_count = 0;
+        
         for(size_t i=1; i<world_items.mass.size(); i++) {
             if(world_items.mass[i] > 0) {
                 avg_integrity += world_items.integrity[i];
@@ -312,14 +376,25 @@ void extract_telemetry_to_state(UIState& state) {
                 if(world_items.matter[i][MATTER_INDEX_HARDNESS] >= 200.0f && world_items.matter[i][MATTER_INDEX_HARDNESS] < 999.0f) {
                     farms_count++;
                 }
+                
+                if (world_items.owner_id[i] != 0) {
+                    total_food += world_items.matter[i][MATTER_INDEX_CALORIES];
+                    total_tools += world_items.matter[i][MATTER_INDEX_HARDNESS];
+                    total_gems += world_items.matter[i][MATTER_INDEX_AESTHETICS];
+                }
             }
         }
         if (integrity_count > 0) avg_integrity /= integrity_count;
         
         csv_file << state.tick << "," << state.pop_alive << "," << state.avg_energy << ","
                  << avg_lifespan << "," << avg_aggro << "," << avg_farm << "," 
-                 << state.active_edges << "," << farms_count << ","
-                 << avg_age << "," << avg_repro << "," << avg_metabolism << "," << avg_integrity << "\n";
+                 << active_edges << "," << farms_count << ","
+                 << avg_age << "," << avg_repro << "," << avg_metabolism << "," << avg_integrity << ","
+                 << avg_panic << "," << avg_min_repro << "," << avg_attack << "," << avg_barter << ","
+                 << avg_knowledge << "," << avg_intelligence << "," << avg_artistry << ","
+                 << market_orders << "," << avg_trust << "," << max_trust << "," << gini << ","
+                 << total_food << "," << total_tools << "," << total_gems << ","
+                 << global_deaths_starvation << "," << global_deaths_old_age << "," << global_deaths_combat << "\n";
         csv_file.flush();
     }
 }

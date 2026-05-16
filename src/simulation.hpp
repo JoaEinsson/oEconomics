@@ -5,6 +5,10 @@ extern std::atomic<bool> simulation_running;
 extern std::atomic<int> target_tps;
 extern std::atomic<bool> simulation_paused;
 
+extern uint32_t global_deaths_starvation;
+extern uint32_t global_deaths_old_age;
+extern uint32_t global_deaths_combat;
+
 struct SimulationConfig {
     int seed;
     int initial_pop;

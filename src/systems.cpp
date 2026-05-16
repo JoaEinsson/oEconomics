@@ -2,6 +2,7 @@
 #include <cmath>
 #include <algorithm>
 #include <random>
+#include "simulation.hpp"
 
 static std::mt19937 global_rng;
 
@@ -101,6 +102,7 @@ void system_cognition(Agents& A, Items& I) {
         float worst_score = 999999.0f;
         int raw_materials = 0;
         int heavy_tools = 0;
+        EntityID seed_item = 0;
         
         for(int j=0; j<INV_CAP; j++) {
             EntityID item = A.inventory[i][j];
@@ -109,8 +111,13 @@ void system_cognition(Agents& A, Items& I) {
             if(v < worst_score) { worst_score = v; item_to_discard = item; }
             
             float h = I.matter[item][MATTER_INDEX_HARDNESS];
+            float c = I.matter[item][MATTER_INDEX_CALORIES];
+            float info = I.matter[item][MATTER_INDEX_INFORMATION];
+            
             if(h > 0 && h <= 50.0f) raw_materials++;
             if(h >= 60.0f && h < 190.0f) heavy_tools++; // Facilitado para 60 (1 fusão)
+            if(c > 0) seed_item = item;
+            if(info > 0) A.knowledge[i] += info * 0.01f; // Leitura passiva L3/L7
         }
         
         std::array<float, M_MAT> d = calculate_deficit_vector(i, A, I);
@@ -133,8 +140,9 @@ void system_cognition(Agents& A, Items& I) {
                 }
             }
             if(A.intent[i].target_agent == 0) A.intent[i].type = Agents::Idle;
-        } else if (A.energy[i] > 30.0f && farm_meme > 0.6f && heavy_tools > 0) {
+        } else if (A.energy[i] > 30.0f && farm_meme > 0.6f && heavy_tools > 0 && seed_item != 0) {
             A.intent[i].type = Agents::Farm;
+            A.intent[i].offered_item = seed_item;
         } else if (A.energy[i] > repro_th && A.age[i] > min_repro_age) {
             A.intent[i].type = Agents::Reproduce;
         } else if (raw_materials >= 2 && A.energy[i] > 20.0f) { // Alterado para 20.0f (CRAFT para desocupar espaço)
@@ -214,8 +222,13 @@ void system_metabolism_and_consumption(Agents& A, Items& I) {
     for(size_t i = 1; i < A.energy.size(); i++) {
         if(A.energy[i] <= 0) continue; 
         
+        bool was_alive = (A.energy[i] > 0);
         A.age[i]++;
-        if(A.age[i] > A.lifespan[i]) A.energy[i] = 0; // Entropia Genética L10
+        if(A.age[i] > A.lifespan[i]) {
+            A.energy[i] = 0; // Entropia Genética L10
+            if (was_alive) global_deaths_old_age++;
+            was_alive = false;
+        }
         
         if (A.energy[i] <= 0) {
             // Morreu! Lei Termodinâmica L1: Solta os itens de volta na natureza
@@ -244,6 +257,7 @@ void system_metabolism_and_consumption(Agents& A, Items& I) {
         }
         
         A.energy[i] -= current_basal;
+        if(A.energy[i] <= 0 && was_alive) global_deaths_starvation++;
         if(A.energy[i] < 80.0f) { // Combate ao celibato: comer sempre que puder para conseguir energia de reprodução
             for(int j=0; j<INV_CAP; j++) {
                 EntityID item = A.inventory[i][j];
@@ -493,12 +507,16 @@ void system_movement(Agents& A, Items& I, const Markets& M, const TrustGraph& G)
 void system_reproduction(Agents& A) {
     std::normal_distribution<float> mutation(0.0f, 15.0f); // Mutação Memética L7
     std::uniform_int_distribution<int> dir(-1, 1);
+    std::normal_distribution<float> mut(0.0f, 1.0f);
 
     size_t initial_size = A.energy.size();
     for (size_t i = 1; i < initial_size; i++) {
         if (A.energy[i] <= 0) continue;
+        
+        float repro_th = A.phenotype[i][GENE_REPRO_TH];
+        float min_repro_age = A.phenotype[i][GENE_MIN_REPRO_AGE];
 
-        if (A.intent[i].type == Agents::Reproduce && A.energy[i] > A.phenotype[i][GENE_REPRO_TH]) {
+        if (A.intent[i].type == Agents::Reproduce && A.energy[i] > repro_th && A.age[i] > min_repro_age) {
             // Mitose Perfeita Termodinâmica (Energia se divide L1)
             A.energy[i] /= 2.0f;
             A.intent[i].type = Agents::Idle;
@@ -516,6 +534,7 @@ void system_reproduction(Agents& A) {
                 A.basal_cost.push_back(0);
                 A.pos.push_back({0,0});
                 A.phenotype.push_back({0});
+                A.knowledge.push_back(0);
                 std::array<EntityID, INV_CAP> empty_inv = {0};
                 A.inventory.push_back(empty_inv);
                 A.intent.push_back({Agents::Idle, {0,0}, 0, {0}});
@@ -542,8 +561,12 @@ void system_reproduction(Agents& A) {
 
             A.phenotype[child_idx][GENE_PANIC_TH] = std::clamp(A.phenotype[i][GENE_PANIC_TH] + std::normal_distribution<float>(0.0f, 5.0f)(global_rng), 5.0f, 90.0f);
             A.phenotype[child_idx][GENE_MIN_REPRO_AGE] = std::clamp(A.phenotype[i][GENE_MIN_REPRO_AGE] + std::normal_distribution<float>(0.0f, 2.0f)(global_rng), 0.0f, 100.0f);
-            A.phenotype[child_idx][GENE_ATTACK_TH] = std::clamp(A.phenotype[i][GENE_ATTACK_TH] + std::normal_distribution<float>(0.0f, 5.0f)(global_rng), 5.0f, 90.0f);
-            A.phenotype[child_idx][GENE_BARTER_DESIRE] = std::clamp(A.phenotype[i][GENE_BARTER_DESIRE] + std::normal_distribution<float>(0.0f, 2.0f)(global_rng), 1.0f, 50.0f);
+            A.phenotype[child_idx][GENE_ATTACK_TH] = std::clamp(A.phenotype[i][GENE_ATTACK_TH] + mut(global_rng), 0.0f, 100.0f);
+            A.phenotype[child_idx][GENE_BARTER_DESIRE] = std::clamp(A.phenotype[i][GENE_BARTER_DESIRE] + mut(global_rng), 0.0f, 100.0f);
+            A.phenotype[child_idx][GENE_INTELLIGENCE] = std::clamp(A.phenotype[i][GENE_INTELLIGENCE] + (mut(global_rng)/100.0f), 0.0f, 1.0f);
+            A.phenotype[child_idx][GENE_INNOVATION] = std::clamp(A.phenotype[i][GENE_INNOVATION] + (mut(global_rng)/100.0f), 0.0f, 1.0f);
+            A.phenotype[child_idx][GENE_ARTISTRY] = std::clamp(A.phenotype[i][GENE_ARTISTRY] + (mut(global_rng)/100.0f), 0.0f, 1.0f);
+            A.knowledge[child_idx] = 0.0f; // Tabula Rasa
 
 
             A.lifespan[child_idx] = (int)A.phenotype[child_idx][GENE_LIFESPAN];
@@ -557,42 +580,6 @@ void system_reproduction(Agents& A) {
     }
 }
 
-void system_crafting(Agents& A, Items& I) {
-    for (size_t i = 1; i < A.energy.size(); i++) {
-        if (A.energy[i] <= 0) continue;
-        
-        if (A.intent[i].type == Agents::CraftItem) {
-            // Acha 2 matérias primas para fundir
-            int idx1 = -1, idx2 = -1;
-            for(int j=0; j<INV_CAP; j++) {
-                EntityID item = A.inventory[i][j];
-                if(item != 0 && I.matter[item][MATTER_INDEX_HARDNESS] > 0 && I.matter[item][MATTER_INDEX_HARDNESS] <= 50.0f) {
-                    if (idx1 == -1) idx1 = j;
-                    else if (idx2 == -1) { idx2 = j; break; }
-                }
-            }
-            if (idx1 != -1 && idx2 != -1) {
-                // Fissão / Fusão (Trabalho L3)
-                EntityID item1 = A.inventory[i][idx1];
-                EntityID item2 = A.inventory[i][idx2];
-                
-                // Soma tensorial com bônus de sinergia humana
-                float new_hardness = (I.matter[item1][MATTER_INDEX_HARDNESS] + I.matter[item2][MATTER_INDEX_HARDNESS]) * 1.5f;
-                
-                I.matter[item1][MATTER_INDEX_HARDNESS] = new_hardness;
-                I.integrity[item1] = 100.0f; // Reconstruído
-                I.mass[item1] += I.mass[item2] * 0.8f; // Perda material de 20%
-                
-                destroy_item(item2, A, I); // Destrói item2
-                
-                A.energy[i] -= 10.0f; // Custo energético do trabalho manual
-                A.intent[i].type = Agents::Idle;
-            } else {
-                A.intent[i].type = Agents::Idle; 
-            }
-        }
-    }
-}
 
 void system_social_maintenance(Agents& A, TrustGraph& G) {
     for(size_t i = 0; i < G.active.size(); i++) {
@@ -697,17 +684,68 @@ void system_agriculture(Agents& A, Items& I) {
     for(size_t i = 1; i < A.energy.size(); i++) {
         if(A.energy[i] <= 0) continue;
         if(A.intent[i].type == Agents::Farm) {
-            for(int j=0; j<INV_CAP; j++) {
-                EntityID item = A.inventory[i][j];
-                if(item != 0 && I.matter[item][MATTER_INDEX_HARDNESS] >= 60.0f) { 
-                    I.owner_id[item] = i; // MANTÉM A POSSE! (Propriedade Privada)
-                    I.anchored[item] = true; // ANCORA AO CHÃO
-                    I.pos[item] = A.pos[i];
-                    I.matter[item][MATTER_INDEX_HARDNESS] = 200.0f; // Transforma em Estrutura/Fazenda
-                    A.inventory[i][j] = 0;
-                    A.energy[i] -= 20.0f; 
-                    break;
+            EntityID seed = A.intent[i].offered_item;
+            if(seed != 0) {
+                // Remove a semente do inventário
+                for(int j=0; j<INV_CAP; j++) {
+                    if (A.inventory[i][j] == seed) A.inventory[i][j] = 0;
                 }
+                I.owner_id[seed] = i; 
+                I.anchored[seed] = true;
+                I.pos[seed] = A.pos[i];
+                I.matter[seed][MATTER_INDEX_HARDNESS] = 200.0f; // Vira estrutura agrícola
+                I.matter[seed][MATTER_INDEX_CALORIES] = 0.0f; // Semente enterrada não pode ser comida
+                A.energy[i] -= 20.0f; // Custo do trabalho
+            }
+            A.intent[i].type = Agents::Idle;
+        }
+    }
+}
+
+void system_crafting(Agents& A, Items& I) {
+    for(size_t i = 1; i < A.energy.size(); i++) {
+        if(A.energy[i] <= 0) continue;
+        if(A.intent[i].type == Agents::CraftItem) {
+            EntityID item1 = 0;
+            EntityID item2 = 0;
+            int idx1 = -1, idx2 = -1;
+            
+            // Pega os dois itens menos valiosos
+            float v1 = 999999.0f, v2 = 999999.0f;
+            for(int j=0; j<INV_CAP; j++) {
+                EntityID it = A.inventory[i][j];
+                if(it == 0) continue;
+                float v = calculate_local_utility(i, it, A, I);
+                if(v < v1) { v2 = v1; item2 = item1; idx2 = idx1; v1 = v; item1 = it; idx1 = j; }
+                else if(v < v2) { v2 = v; item2 = it; idx2 = j; }
+            }
+            
+            if(item1 != 0 && item2 != 0) {
+                float m_in = I.matter[item1][MATTER_INDEX_HARDNESS] + I.matter[item2][MATTER_INDEX_HARDNESS];
+                float k = A.knowledge[i];
+                float efficiency = k / (k + 100.0f);
+                
+                float h_out = m_in * efficiency;
+                float m_wasted = m_in - h_out;
+                
+                float info_yield = m_wasted * A.phenotype[i][GENE_INNOVATION];
+                float aest_yield = m_wasted * A.phenotype[i][GENE_ARTISTRY];
+                
+                // Transmuta o item1 para o resultado final
+                I.matter[item1][MATTER_INDEX_HARDNESS] = h_out;
+                I.matter[item1][MATTER_INDEX_INFORMATION] += info_yield;
+                I.matter[item1][MATTER_INDEX_AESTHETICS] += aest_yield;
+                I.matter[item1][MATTER_INDEX_CALORIES] = 0.0f;
+                I.integrity[item1] = 100.0f; // Restaura integridade
+                
+                // Destrói o item2
+                I.mass[item2] = 0;
+                I.owner_id[item2] = 0;
+                A.inventory[i][idx2] = 0;
+                
+                // Ganho empírico
+                A.knowledge[i] += A.phenotype[i][GENE_INTELLIGENCE] * (m_wasted + 1.0f);
+                A.energy[i] -= 5.0f; // Custo energético do crafting
             }
             A.intent[i].type = Agents::Idle;
         }
@@ -739,10 +777,12 @@ void system_combat(Agents& A, Items& I) {
                 float steal = std::min(40.0f, A.energy[target]);
                 A.energy[i] += steal; 
                 A.energy[target] -= steal; // Assalto não letal automático (Hobbesian Trap fix)
+                if (A.energy[target] <= 0) global_deaths_combat++;
             } else {
                 float steal = std::min(40.0f, A.energy[i]);
                 A.energy[target] += steal;
                 A.energy[i] -= steal; 
+                if (A.energy[i] <= 0) global_deaths_combat++;
             }
             A.intent[i].type = Agents::Idle;
         }
