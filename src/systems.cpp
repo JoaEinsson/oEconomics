@@ -17,6 +17,49 @@ void seed_systems(int seed) {
     global_rng.seed(seed);
 }
 
+extern uint64_t current_tick;
+
+void update_memory(Agents& A, size_t agent_idx, EntityID id, uint8_t type, Vec2 pos, uint32_t ts) {
+    auto& mem = A.spatial_memory[agent_idx];
+    int oldest_idx = 0;
+    uint32_t oldest_ts = 0xFFFFFFFF;
+    
+    for(int i = 0; i < 10; i++) {
+        if(mem[i].id == id && mem[i].type == type) {
+            if(ts > mem[i].ts) { // Só atualiza se for uma informação mais recente
+                mem[i].pos = pos;
+                mem[i].ts = ts;
+            }
+            return;
+        }
+        if(mem[i].type == MEM_NONE) {
+            mem[i] = {id, type, pos, ts};
+            return;
+        }
+        if(mem[i].ts < oldest_ts) {
+            oldest_ts = mem[i].ts;
+            oldest_idx = i;
+        }
+    }
+    
+    // Sobrescreve a lembrança mais velha se a nova fofoca for mais recente do que ela
+    if(ts > oldest_ts) {
+        mem[oldest_idx] = {id, type, pos, ts};
+    }
+}
+
+void gossip_sync(Agents& A, size_t a1, size_t a2) {
+    for(int i = 0; i < 10; i++) {
+        if(A.spatial_memory[a2][i].type != MEM_NONE) {
+            update_memory(A, a1, A.spatial_memory[a2][i].id, A.spatial_memory[a2][i].type, A.spatial_memory[a2][i].pos, A.spatial_memory[a2][i].ts);
+        }
+        if(A.spatial_memory[a1][i].type != MEM_NONE) {
+            update_memory(A, a2, A.spatial_memory[a1][i].id, A.spatial_memory[a1][i].type, A.spatial_memory[a1][i].pos, A.spatial_memory[a1][i].ts);
+        }
+    }
+}
+
+
 void build_spatial_grid(const Agents& A, const Items& I) {
     spatial_head.assign(GRID_WIDTH * GRID_HEIGHT, -1);
     if(spatial_next.size() < A.energy.size()) spatial_next.resize(A.energy.size(), -1);
@@ -463,14 +506,21 @@ void system_movement(Agents& A, Items& I, const Markets& M, const TrustGraph& G)
             float best_trust = 0.0f;
             Vec2 target = {0,0};
             
+            // Busca L2: Apenas memória espacial local (Sem Onisciência Global)
             for(size_t e = 0; e < G.active.size(); e++) {
                 if(!G.active[e]) continue;
                 if(G.source[e] == i || G.target[e] == i) {
                     EntityID friend_id = (G.source[e] == i) ? G.target[e] : G.source[e];
-                    if(A.energy[friend_id] > 0 && G.trust[e] > best_trust && G.trust[e] > 5.0f) {
-                        best_trust = G.trust[e];
-                        target = A.pos[friend_id];
-                        going_to_friend = true;
+                    if(G.trust[e] > best_trust && G.trust[e] > 5.0f) {
+                        // Consulta a memória em vez do oráculo global
+                        for(int m = 0; m < 10; m++) {
+                            if(A.spatial_memory[i][m].type == MEM_AGENT && A.spatial_memory[i][m].id == friend_id) {
+                                best_trust = G.trust[e];
+                                target = A.spatial_memory[i][m].pos;
+                                going_to_friend = true;
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -480,17 +530,28 @@ void system_movement(Agents& A, Items& I, const Markets& M, const TrustGraph& G)
                 else if (A.pos[i].x > target.x) dx = -1.0f;
                 if (A.pos[i].y < target.y) dy = 1.0f;
                 else if (A.pos[i].y > target.y) dy = -1.0f;
-            } else if (!M.pos.empty()) {
+            } else {
+                // Consulta memória para buscar um Mercado
                 float min_dist = 999999.0f;
-                float mx = M.pos[0].x, my = M.pos[0].y;
-                for(Vec2 mpos : M.pos) {
-                    float dist = std::abs(A.pos[i].x - mpos.x) + std::abs(A.pos[i].y - mpos.y);
-                    if(dist < min_dist) { min_dist = dist; mx = mpos.x; my = mpos.y; }
+                bool found_market = false;
+                Vec2 m_target = {0,0};
+                for(int m = 0; m < 10; m++) {
+                    if(A.spatial_memory[i][m].type == MEM_MARKET) {
+                        Vec2 pos = A.spatial_memory[i][m].pos;
+                        float dist = std::abs(A.pos[i].x - pos.x) + std::abs(A.pos[i].y - pos.y);
+                        if(dist < min_dist) { min_dist = dist; m_target = pos; found_market = true; }
+                    }
                 }
-                if (A.pos[i].x < mx) dx = 1.0f;
-                else if (A.pos[i].x > mx) dx = -1.0f;
-                if (A.pos[i].y < my) dy = 1.0f;
-                else if (A.pos[i].y > my) dy = -1.0f;
+                if(found_market) {
+                    if (A.pos[i].x < m_target.x) dx = 1.0f;
+                    else if (A.pos[i].x > m_target.x) dx = -1.0f;
+                    if (A.pos[i].y < m_target.y) dy = 1.0f;
+                    else if (A.pos[i].y > m_target.y) dy = -1.0f;
+                } else {
+                    // Sem memória, anda aleatoriamente (Exploração)
+                    dx = dir(global_rng);
+                    dy = dir(global_rng);
+                }
             }
         } else {
             // Faro Local Universal (L5 + L4: Gradiente descendente guiado por Produto Escalar)
@@ -525,9 +586,30 @@ void system_movement(Agents& A, Items& I, const Markets& M, const TrustGraph& G)
                                         }
                                     }
                                 }
+                                
+                                // Gravação de Memória (Percepção Geográfica)
+                                if (I.anchored[k] && I.matter[k][MATTER_INDEX_HARDNESS] >= 100.0f) {
+                                    update_memory(A, i, k, MEM_RESOURCE, I.pos[k], current_tick);
+                                }
+                            }
+                            
+                            // Percepção de Agentes e Gossip Passivo
+                            for(int tgt = spatial_head[cell_idx]; tgt != -1; tgt = spatial_next[tgt]) {
+                                if(tgt != i) {
+                                    update_memory(A, i, tgt, MEM_AGENT, A.pos[tgt], current_tick);
+                                    if(current_tick % 5 == 0) gossip_sync(A, i, tgt); // Troca informações casualmente (fofoca)
+                                }
                             }
                         }
                     }
+                }
+            }
+            
+            // Percepção de Mercados (Emergentes) no Radar
+            for(size_t m = 0; m < M.pos.size(); m++) {
+                float dist = std::abs(M.pos[m].x - A.pos[i].x) + std::abs(M.pos[m].y - A.pos[i].y);
+                if(dist <= expanded_radar) {
+                    update_memory(A, i, m, MEM_MARKET, M.pos[m], current_tick);
                 }
             }
             
@@ -631,6 +713,9 @@ void system_reproduction(Agents& A) {
                 if (A.energy[j] <= 0) { child_idx = j; break; }
             }
 
+            std::array<EpistemicNode, 10> empty_mem;
+            for(int k=0; k<10; k++) empty_mem[k] = {0, MEM_NONE, {0,0}, 0};
+
             if (child_idx == 0) {
                 // Crescimento real da população além do recorde prévio
                 child_idx = A.energy.size();
@@ -639,12 +724,14 @@ void system_reproduction(Agents& A) {
                 A.pos.push_back({0,0});
                 A.phenotype.push_back({0});
                 A.knowledge.push_back(0);
+                A.spatial_memory.push_back(empty_mem);
                 std::array<EntityID, INV_CAP> empty_inv = {0};
                 A.inventory.push_back(empty_inv);
                 A.intent.push_back({Agents::Idle, {0,0}, 0, {0}});
                 A.age.push_back(0);
                 A.lifespan.push_back(0);
             }
+            A.spatial_memory[child_idx] = empty_mem; // Tabula rasa da memória espacial
 
             // Crescimento da População
             A.energy[child_idx] = A.energy[i]; 
