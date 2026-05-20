@@ -10,6 +10,9 @@ struct UIState {
     float avg_energy;
     float total_trade_volume;
     uint32_t active_edges;
+    uint32_t active_tools;
+    uint32_t tools_crafted;
+    uint32_t farms_count;
     
     // Grid geográfico achatado
     std::vector<char> spatial_grid; // Tamanho: WIDTH * HEIGHT

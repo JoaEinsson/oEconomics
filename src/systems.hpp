@@ -4,10 +4,9 @@
 // Protótipos dos sistemas baseados nas Leis L1-L10
 
 float calculate_local_utility(size_t agent_idx, EntityID item_id, const Agents& A, const Items& I);
-std::array<float, M_MAT> calculate_deficit_vector(size_t agent_idx, const Agents& A);
 float vector_similarity(const std::array<float, M_MAT>& v1, const std::array<float, M_MAT>& v2);
 void swap_items_in_inventory(Agents& A, EntityID agent1, EntityID item1, EntityID agent2, EntityID item2);
-void destroy_item(EntityID item, Agents& A, Items& I);
+void destroy_item(EntityID item, Items& I);
 
 std::array<float, M_MAT> calculate_deficit_vector(size_t agent_idx, const Agents& A, const Items& I);
 

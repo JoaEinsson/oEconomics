@@ -259,7 +259,7 @@ void ui_thread() {
         EndMode2D();
 
         // --- Telemetria Overlay ---
-        DrawRectangle(10, 10, 300, 180, Fade(BLACK, 0.85f));
+        DrawRectangle(10, 10, 300, 270, Fade(BLACK, 0.85f));
         DrawText("OECONOMICS - FASE 10", 20, 20, 20, WHITE);
         
         if (local_state.spatial_grid.size() > 0) {
@@ -267,17 +267,21 @@ void ui_thread() {
             DrawText(TextFormat("POP ALIVE: %d", local_state.pop_alive), 20, 75, 20, RAYWHITE);
             DrawText(TextFormat("AVG ENERGY: %.1f", local_state.avg_energy), 20, 100, 20, RAYWHITE);
             DrawText(TextFormat("TRUST EDGES: %d", local_state.active_edges), 20, 125, 20, GOLD);
+            // Bens Construídos
+            DrawText(TextFormat("FARMS: %d", local_state.farms_count), 20, 155, 20, ORANGE);
+            DrawText(TextFormat("TOOLS: %d  (Crafted: %d)", local_state.active_tools, local_state.tools_crafted), 20, 180, 20, SKYBLUE);
         } else {
             DrawText("Carregando...", 20, 50, 20, GRAY);
         }
         
-        DrawText("ZOOM: Wheel | PgUp/PgDn", 20, 155, 10, LIGHTGRAY);
-        DrawText("PAN: Drag L-Click | Arrows", 20, 170, 10, LIGHTGRAY);
+        DrawText("ZOOM: Wheel | PgUp/PgDn", 20, 210, 10, LIGHTGRAY);
+        DrawText("PAN: Drag L-Click | Arrows", 20, 225, 10, LIGHTGRAY);
+        DrawText("[P] Pause  [ESC] Sair", 20, 240, 10, LIGHTGRAY);
         
         // Controle de TPS In-Game
-        DrawRectangle(10, 200, 300, 60, Fade(BLACK, 0.85f));
+        DrawRectangle(10, 290, 300, 60, Fade(BLACK, 0.85f));
         int current_tps_val = target_tps.load();
-        int new_tps = DrawCustomSlider({20, 210, 280, 40}, "TPS", current_tps_val, 1, 60);
+        int new_tps = DrawCustomSlider({20, 300, 280, 40}, "TPS", current_tps_val, 1, 60);
         if (new_tps != current_tps_val) {
             target_tps.store(new_tps);
         }

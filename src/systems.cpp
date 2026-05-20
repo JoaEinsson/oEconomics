@@ -2,7 +2,6 @@
 #include <cmath>
 #include <algorithm>
 #include <random>
-#include <execution>
 #include <numeric>
 #include "simulation.hpp"
 
@@ -919,6 +918,27 @@ void system_agriculture(Agents& A, Items& I) {
         if(A.intent[i].type == Agents::Farm) {
             EntityID seed = A.intent[i].offered_item;
             if(seed != 0) {
+                // Procurar por ferramenta de cultivo no inventário do agente
+                // Item não ancorado, com Hardness > 0 e diferente da semente
+                EntityID tool = 0;
+                float best_hardness = 0.0f;
+                for(int j = 0; j < INV_CAP; j++) {
+                    EntityID it = A.inventory[i][j];
+                    if(it != 0 && it != seed && !I.anchored[it]) {
+                        float h = I.matter[it][MATTER_INDEX_HARDNESS];
+                        if(h > best_hardness) {
+                            best_hardness = h;
+                            tool = it;
+                        }
+                    }
+                }
+
+                float work_cost = 20.0f;
+                if(tool != 0) {
+                    work_cost = 20.0f / (1.0f + 0.1f * std::sqrt(best_hardness));
+                    I.integrity[tool] -= 2.0f;
+                }
+
                 // Remove a semente do inventário
                 for(int j=0; j<INV_CAP; j++) {
                     if (A.inventory[i][j] == seed) A.inventory[i][j] = 0;
@@ -928,7 +948,14 @@ void system_agriculture(Agents& A, Items& I) {
                 I.pos[seed] = A.pos[i];
                 I.matter[seed][MATTER_INDEX_HARDNESS] = 200.0f; // Vira estrutura agrícola
                 I.matter[seed][MATTER_INDEX_CALORIES] = 0.0f; // Semente enterrada não pode ser comida
-                A.energy[i] -= 20.0f; // Custo do trabalho
+                A.energy[i] -= work_cost; // Custo do trabalho ajustado
+
+                if (tool != 0 && I.integrity[tool] <= 0.0f) {
+                    for(int j = 0; j < INV_CAP; j++) {
+                        if(A.inventory[i][j] == tool) A.inventory[i][j] = 0;
+                    }
+                    destroy_item(tool, I);
+                }
             }
             A.intent[i].type = Agents::Idle;
         }
@@ -954,9 +981,32 @@ void system_crafting(Agents& A, Items& I) {
             }
             
             if(item1 != 0 && item2 != 0) {
+                // Procurar por uma ferramenta produtiva no inventário (diferente de item1 e item2, Hardness > 0, não ancorada)
+                EntityID tool = 0;
+                float best_hardness = 0.0f;
+                for(int j = 0; j < INV_CAP; j++) {
+                    EntityID it = A.inventory[i][j];
+                    if(it != 0 && it != item1 && it != item2 && !I.anchored[it]) {
+                        float h = I.matter[it][MATTER_INDEX_HARDNESS];
+                        if(h > best_hardness) {
+                            best_hardness = h;
+                            tool = it;
+                        }
+                    }
+                }
+
                 float m_in = I.matter[item1][MATTER_INDEX_HARDNESS] + I.matter[item2][MATTER_INDEX_HARDNESS];
                 float k = A.knowledge[i];
-                float efficiency = k / (k + 100.0f);
+                
+                float efficiency = 0.0f;
+                float craft_cost = 5.0f;
+                if(tool != 0) {
+                    efficiency = (k + 0.5f * best_hardness) / (k + 0.5f * best_hardness + 100.0f);
+                    craft_cost = 5.0f / (1.0f + 0.1f * std::sqrt(best_hardness));
+                    I.integrity[tool] -= 3.0f;
+                } else {
+                    efficiency = k / (k + 100.0f);
+                }
                 
                 float h_out = m_in * efficiency;
                 float m_wasted = m_in - h_out;
@@ -977,7 +1027,16 @@ void system_crafting(Agents& A, Items& I) {
                 
                 // Ganho empírico
                 A.knowledge[i] += A.phenotype[i][GENE_INTELLIGENCE] * (m_wasted + 1.0f);
-                A.energy[i] -= 5.0f; // Custo energético do crafting
+                A.energy[i] -= craft_cost; // Custo energético do crafting ajustado
+                global_tools_crafted++;
+
+                // Destrói a ferramenta se quebrada
+                if (tool != 0 && I.integrity[tool] <= 0.0f) {
+                    for(int j = 0; j < INV_CAP; j++) {
+                        if(A.inventory[i][j] == tool) A.inventory[i][j] = 0;
+                    }
+                    destroy_item(tool, I);
+                }
             }
             A.intent[i].type = Agents::Idle;
         }

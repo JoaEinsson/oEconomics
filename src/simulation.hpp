@@ -8,6 +8,7 @@ extern std::atomic<bool> simulation_paused;
 extern std::atomic<uint32_t> global_deaths_starvation;
 extern std::atomic<uint32_t> global_deaths_old_age;
 extern std::atomic<uint32_t> global_deaths_combat;
+extern std::atomic<uint32_t> global_tools_crafted;
 
 struct SimulationConfig {
     int seed;

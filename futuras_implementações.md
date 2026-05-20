@@ -4,12 +4,12 @@ Ideias e mecânicas emergentes alinhadas à Constituição do Motor (Zero OOP, C
 
 ## Eixo 1: Aprofundamento Econômico e Material (Produção e Valor)
 
-- [ ] **Bens de Capital Físico (Ferramentas que geram Alavancagem):**
+- [ X ] **Bens de Capital Físico (Ferramentas que geram Alavancagem):**
   - **Mecânica:** Introduzir Itens com alto índice de `Hardness` e `Information` (Ferramentas).
   - **Efeito:** Se mantidos no inventário durante as intenções `Farm` ou `CraftItem`, o gasto basal de energia cai pela metade ou o rendimento (yield) dobra.
   - **Entropia:** Cada uso consome `integrity` da ferramenta, gerando demanda cíclica para forjadores.
 
-- [ ] **O Surgimento do Crédito e "Violência Legal" (Contratos Imperfeitos):**
+- [ X ] **O Surgimento do Crédito e "Violência Legal" (Contratos Imperfeitos):**
   - **Mecânica:** Agentes com alto nível de `Trust` podem trocar matéria real por uma "Nota Promissória" (um Item físico cujo tensor carrega o ID do devedor).
   - **Consequência:** Se o devedor não honrar a promessa no futuro, a aresta do `TrustGraph` despenca para negativo severo, forçando a ativação do meme `Aggro` (Guerra por Quebra de Contrato).
 

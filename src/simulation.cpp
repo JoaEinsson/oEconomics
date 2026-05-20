@@ -14,6 +14,7 @@ std::atomic<bool> simulation_paused{false};
 std::atomic<uint32_t> global_deaths_starvation{0};
 std::atomic<uint32_t> global_deaths_old_age{0};
 std::atomic<uint32_t> global_deaths_combat{0};
+std::atomic<uint32_t> global_tools_crafted{0};
 
 std::mutex ui_mutex;
 UIState shared_state;
@@ -80,10 +81,11 @@ void init_world(const SimulationConfig& config) {
     global_deaths_starvation = 0;
     global_deaths_old_age = 0;
     global_deaths_combat = 0;
+    global_tools_crafted = 0;
 
     csv_file.open("telemetry.csv");
     if(csv_file.is_open()) {
-        csv_file << "Tick,Pop_Alive,Avg_Energy,Avg_Lifespan,Avg_Aggro,Avg_Farm,Active_Edges,Farms_Count,Avg_Age,Avg_Repro_Th,Avg_Metabolism,Avg_Integrity,Avg_Panic_Th,Avg_Min_Repro,Avg_Attack_Th,Avg_Barter_Desire,Avg_Knowledge,Avg_Intelligence,Avg_Artistry,Market_Orders,Average_Trust,Max_Trust,Gini_Index,Total_Food,Total_Tools,Total_Gems,Deaths_Starvation,Deaths_OldAge,Deaths_Combat\n";
+        csv_file << "Tick,Pop_Alive,Avg_Energy,Avg_Lifespan,Avg_Aggro,Avg_Farm,Active_Edges,Farms_Count,Avg_Age,Avg_Repro_Th,Avg_Metabolism,Avg_Integrity,Avg_Panic_Th,Avg_Min_Repro,Avg_Attack_Th,Avg_Barter_Desire,Avg_Knowledge,Avg_Intelligence,Avg_Artistry,Market_Orders,Average_Trust,Max_Trust,Gini_Index,Total_Food,Total_Tools,Total_Gems,Active_Tools,Tools_Crafted,Deaths_Starvation,Deaths_OldAge,Deaths_Combat\n";
     }
 
     std::mt19937 rng(config.seed);
@@ -244,6 +246,18 @@ void extract_telemetry_to_state(UIState& state) {
         if(world_graph.active[i]) state.active_edges++;
     }
 
+    // Contagem de bens construídos em tempo real
+    state.active_tools = 0;
+    state.farms_count = 0;
+    for(size_t i = 1; i < world_items.mass.size(); i++) {
+        if(world_items.mass[i] > 0) {
+            float h = world_items.matter[i][MATTER_INDEX_HARDNESS];
+            if(h > 0.0f && h < 200.0f) state.active_tools++;
+            if(h >= 200.0f && h < 999.0f && world_items.anchored[i]) state.farms_count++;
+        }
+    }
+    state.tools_crafted = global_tools_crafted.load();
+
     std::fill(state.spatial_grid.begin(), state.spatial_grid.end(), ' ');
     std::fill(state.spatial_health.begin(), state.spatial_health.end(), 0);
     std::fill(state.energy_histogram.begin(), state.energy_histogram.end(), 0);
@@ -384,6 +398,7 @@ void write_telemetry_to_csv(UIState& state) {
         float total_food = 0;
         float total_tools = 0;
         float total_gems = 0;
+        int active_tools_count = 0;
         
         int farms_count = 0;
         float avg_integrity = 0;
@@ -395,6 +410,11 @@ void write_telemetry_to_csv(UIState& state) {
                 integrity_count++;
                 if(world_items.matter[i][MATTER_INDEX_HARDNESS] >= 200.0f && world_items.matter[i][MATTER_INDEX_HARDNESS] < 999.0f) {
                     farms_count++;
+                }
+                
+                float h = world_items.matter[i][MATTER_INDEX_HARDNESS];
+                if(h > 0.0f && h < 200.0f) {
+                    active_tools_count++;
                 }
                 
                 if (world_items.owner_id[i] != 0) {
@@ -414,6 +434,7 @@ void write_telemetry_to_csv(UIState& state) {
                  << avg_knowledge << "," << avg_intelligence << "," << avg_artistry << ","
                  << market_orders << "," << avg_trust << "," << max_trust << "," << gini << ","
                  << total_food << "," << total_tools << "," << total_gems << ","
+                 << active_tools_count << "," << global_tools_crafted << ","
                  << global_deaths_starvation << "," << global_deaths_old_age << "," << global_deaths_combat << "\n";
         // csv_file.flush(); // Removido flush constante para evitar gargalo de IO
     }
