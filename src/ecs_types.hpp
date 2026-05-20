@@ -75,6 +75,7 @@ struct Agents {
         EntityID target_agent; // Para o sistema de Guerra
     };
     std::vector<Intention> intent;
+    std::vector<EntityID> dead_ids; // Recycled agent slots
 };
 
 struct Items {
@@ -84,6 +85,7 @@ struct Items {
     std::vector<EntityID> owner_id;               // 0 = sem dono (chão)
     std::vector<Vec2> pos;                        // Importante para fricção espacial
     std::vector<bool> anchored;                   // Propriedade Privada
+    std::vector<EntityID> dead_ids;               // Recycled item slots
 };
 
 struct Orders {

@@ -164,12 +164,15 @@ void swap_items_in_inventory(Agents& A, EntityID agent1, EntityID item1, EntityI
 }
 
 void destroy_item(EntityID item, Items& I) {
-    if(item < I.mass.size()) {
-        I.mass[item] = 0;
-        I.integrity[item] = 0;
-        I.owner_id[item] = 0;
-        I.anchored[item] = false;
-        for(int i = 0; i < M_MAT; i++) I.matter[item][i] = 0;
+    if(item != 0 && item < I.mass.size()) {
+        if(I.mass[item] > 0.0f) {
+            I.mass[item] = 0.0f;
+            I.integrity[item] = 0.0f;
+            I.owner_id[item] = 0;
+            I.anchored[item] = false;
+            for(int i = 0; i < M_MAT; i++) I.matter[item][i] = 0.0f;
+            I.dead_ids.push_back(item);
+        }
     }
 }
 
@@ -336,6 +339,7 @@ void system_metabolism_and_consumption(Agents& A, Items& I) {
                     A.inventory[i][j] = 0;
                 }
             }
+            A.dead_ids.push_back(i); // Adiciona ao pool de reciclagem
             continue;
         }
 
@@ -392,6 +396,19 @@ void system_metabolism_and_consumption(Agents& A, Items& I) {
             }
             A.intent[i].type = Agents::Idle; 
         }
+
+        // Se permaneceu morto após a digestão, drop de itens e reciclagem de ID
+        if (A.energy[i] <= 0) {
+            for(int j=0; j<INV_CAP; j++) {
+                EntityID item = A.inventory[i][j];
+                if(item != 0) {
+                    I.owner_id[item] = 0;
+                    I.pos[item] = A.pos[i];
+                    A.inventory[i][j] = 0;
+                }
+            }
+            A.dead_ids.push_back(i);
+        }
     }
 }
 
@@ -443,25 +460,38 @@ void system_nature(Agents& A, Items& I) {
         else if (is_exotic) spawn_chance = 0.01f; // Oásis dão joias muito raro
 
         if (chance(global_rng) < spawn_chance) {
-            // Acha espaço vazio
-            for (size_t j = 1; j < I.mass.size(); j++) {
-                if (I.mass[j] == 0) {
-                    I.pos[j].x = std::clamp(I.pos[src].x + dir(global_rng), 0.0f, (float)GRID_WIDTH - 1);
-                    I.pos[j].y = std::clamp(I.pos[src].y + dir(global_rng), 0.0f, (float)GRID_HEIGHT - 1);
-                    I.mass[j] = 1.0f;
-                    I.integrity[j] = 100.0f;
-                    I.owner_id[j] = 0;
-                    
-                    if (is_vein) {
-                        I.matter[j] = {0.0f, 20.0f, 0.0f, 0.0f}; // Pedra
-                    } else if (is_ruin) {
-                        I.matter[j] = {0.0f, 0.0f, 0.0f, 30.0f}; // Tábua
-                    } else if (is_exotic) {
-                        I.matter[j] = {0.0f, 0.0f, 40.0f, 0.0f}; // Joia
-                    } else {
-                        I.matter[j] = {40.0f, 0.0f, 0.0f, 0.0f}; // Maçã
-                    }
-                    break;
+            // Acha espaço vazio via dead_ids pool
+            size_t j = 0;
+            if (!I.dead_ids.empty()) {
+                j = I.dead_ids.back();
+                I.dead_ids.pop_back();
+            } else {
+                // Crescimento dinâmico elástico do SoA de itens
+                j = I.mass.size();
+                I.matter.push_back({});
+                I.integrity.push_back(100.0f);
+                I.mass.push_back(0.0f);
+                I.owner_id.push_back(0);
+                I.pos.push_back({0.0f, 0.0f});
+                I.anchored.push_back(false);
+            }
+
+            if (j != 0) {
+                I.pos[j].x = std::clamp(I.pos[src].x + dir(global_rng), 0.0f, (float)GRID_WIDTH - 1);
+                I.pos[j].y = std::clamp(I.pos[src].y + dir(global_rng), 0.0f, (float)GRID_HEIGHT - 1);
+                I.mass[j] = 1.0f;
+                I.integrity[j] = 100.0f;
+                I.owner_id[j] = 0;
+                I.anchored[j] = false;
+                
+                if (is_vein) {
+                    I.matter[j] = {0.0f, 20.0f, 0.0f, 0.0f}; // Pedra
+                } else if (is_ruin) {
+                    I.matter[j] = {0.0f, 0.0f, 0.0f, 30.0f}; // Tábua
+                } else if (is_exotic) {
+                    I.matter[j] = {0.0f, 0.0f, 40.0f, 0.0f}; // Joia
+                } else {
+                    I.matter[j] = {40.0f, 0.0f, 0.0f, 0.0f}; // Maçã
                 }
             }
         }
@@ -707,10 +737,11 @@ void system_reproduction(Agents& A) {
             A.energy[i] /= 2.0f;
             A.intent[i].type = Agents::Idle;
 
-            // Busca por reuso de memória via OOM Prevention L10
+            // Busca por reuso de memória via OOM Prevention L10 - O(1) com pool de reciclagem
             size_t child_idx = 0;
-            for(size_t j = 1; j < A.energy.size(); j++) {
-                if (A.energy[j] <= 0) { child_idx = j; break; }
+            if(!A.dead_ids.empty()) {
+                child_idx = A.dead_ids.back();
+                A.dead_ids.pop_back();
             }
 
             std::array<EpistemicNode, 10> empty_mem;
@@ -941,8 +972,7 @@ void system_crafting(Agents& A, Items& I) {
                 I.integrity[item1] = 100.0f; // Restaura integridade
                 
                 // Destrói o item2
-                I.mass[item2] = 0;
-                I.owner_id[item2] = 0;
+                destroy_item(item2, I);
                 A.inventory[i][idx2] = 0;
                 
                 // Ganho empírico
@@ -979,12 +1009,34 @@ void system_combat(Agents& A, Items& I) {
                 float steal = std::min(40.0f, A.energy[target]);
                 A.energy[i] += steal; 
                 A.energy[target] -= steal; // Assalto não letal automático (Hobbesian Trap fix)
-                if (A.energy[target] <= 0) global_deaths_combat++;
+                if (A.energy[target] <= 0) {
+                    global_deaths_combat++;
+                    for(int j=0; j<INV_CAP; j++) {
+                        EntityID item = A.inventory[target][j];
+                        if(item != 0) {
+                            I.owner_id[item] = 0;
+                            I.pos[item] = A.pos[target];
+                            A.inventory[target][j] = 0;
+                        }
+                    }
+                    A.dead_ids.push_back(target);
+                }
             } else {
                 float steal = std::min(40.0f, A.energy[i]);
                 A.energy[target] += steal;
                 A.energy[i] -= steal; 
-                if (A.energy[i] <= 0) global_deaths_combat++;
+                if (A.energy[i] <= 0) {
+                    global_deaths_combat++;
+                    for(int j=0; j<INV_CAP; j++) {
+                        EntityID item = A.inventory[i][j];
+                        if(item != 0) {
+                            I.owner_id[item] = 0;
+                            I.pos[item] = A.pos[i];
+                            A.inventory[i][j] = 0;
+                        }
+                    }
+                    A.dead_ids.push_back(i);
+                }
             }
             A.intent[i].type = Agents::Idle;
         }
@@ -1000,7 +1052,6 @@ void system_entropy(Items& I, Agents& A) {
             I.integrity[i] -= 0.05f; // L10: Ferramentas e Fazendas sofrem desgaste
             if (I.integrity[i] <= 0) {
                 // Destruição térmica
-                I.mass[i] = 0;
                 if(I.owner_id[i] != 0) {
                     EntityID owner = I.owner_id[i];
                     for(int j=0; j<INV_CAP; j++) {
@@ -1009,7 +1060,7 @@ void system_entropy(Items& I, Agents& A) {
                         }
                     }
                 }
-                I.owner_id[i] = 0;
+                destroy_item(i, I);
             }
         }
     }

@@ -46,6 +46,9 @@ void init_world(const SimulationConfig& config) {
     world_items.integrity.clear();
     world_items.anchored.clear();
     
+    world_agents.dead_ids.clear();
+    world_items.dead_ids.clear();
+    
     world_agents.pos.resize(config.initial_pop);
     world_agents.energy.resize(config.initial_pop, 100.0f);
     world_agents.age.resize(config.initial_pop, 0);
@@ -181,6 +184,11 @@ void init_world(const SimulationConfig& config) {
         world_items.pos[item_id] = {pos_x(rng), pos_y(rng)};
         world_items.matter[item_id] = {40.0f, 0, 0, 0};
         item_id++;
+    }
+
+    // Popula o pool de IDs reciclados de itens com os slots excedentes não utilizados
+    for (size_t i = item_id; i < world_items.mass.size(); i++) {
+        world_items.dead_ids.push_back(i);
     }
 
     // Mercados não nascem mais com o mundo. Eles emergem!
